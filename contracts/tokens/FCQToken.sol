@@ -1,8 +1,8 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity >=0.7.0 <0.8.0;
+pragma solidity ^0.8.6;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20Burnable.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import "eth-token-recover/contracts/TokenRecover.sol";
 
 abstract contract ContractFallbacks {
@@ -13,8 +13,11 @@ abstract contract ContractFallbacks {
 // based on implementation https://etherscan.io/address/0x6710cee627fa3a988200ffd5687cc1c814cef0f6#code
 contract FCQToken is ERC20Burnable, TokenRecover {
     constructor() ERC20("Fortem Capital Token", "FCQ") {
-        _setupDecimals(0);
         _mint(msg.sender, 210000000);
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 0;
     }
 
     /**

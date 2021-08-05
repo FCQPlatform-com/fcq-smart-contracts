@@ -1,5 +1,5 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity >=0.7.0 <0.8.0;
+pragma solidity ^0.8.6;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -16,9 +16,9 @@ interface IEquityToken {
     function issue(address tokenHolder, uint256 value, bytes calldata data) external;
 
     // Transfer Validity
-    function canTransfer(address to, uint256 value, bytes calldata data) external view returns (bool, byte, bytes32);
+    function canTransfer(address to, uint256 value, bytes calldata data) external view returns (bool, bytes1, bytes32);
     function canTransferFrom(address from, address to, uint256 value, bytes calldata data) 
-        external view returns (bool, byte, bytes32);
+        external view returns (bool, bytes1, bytes32);
     function setTransferValidator(address validator) external returns (bool);
 
     // Dividends

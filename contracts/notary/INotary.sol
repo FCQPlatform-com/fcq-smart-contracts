@@ -1,5 +1,5 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity >=0.7.0 <0.8.0;
+pragma solidity ^0.8.6;
 
 interface INotary {
     event Document(bytes32 indexed name, string uri, bytes32 documentHash);

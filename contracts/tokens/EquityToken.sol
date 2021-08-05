@@ -1,8 +1,9 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity >=0.7.0 <0.8.0;
+pragma solidity ^0.8.6;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "eth-token-recover/contracts/TokenRecover.sol";
 import "./IEquityToken.sol";
 import "./transferValidator/ITransferValidator.sol";
@@ -43,23 +44,26 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
         address validator,
         IERC20 usdtToken
     )
-        ERC20(name, symbol)
+    ERC20(name, symbol)
     {
-        _setupDecimals(0);
         _validator = ITransferValidator(validator);
         _isIssuable = true;
         _usdtToken = usdtToken;
     }
 
-    function setTransferValidator(address validator) 
-        external override
-        onlyOwner
-        returns (bool) 
+    function setTransferValidator(address validator)
+    external override
+    onlyOwner
+    returns (bool)
     {
         _validator = ITransferValidator(validator);
 
         emit TransferValidatorReplaced(validator);
         return true;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 0;
     }
 
     /********************************** Transfers **********************************/
@@ -92,13 +96,13 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
         super.transfer(to, value);
     }
 
-   /**
-    * @dev Transfer the amount of tokens on behalf of the address 'from' to the address 'to'.
-    * @param from Token holder (or 'address(0)' to set from to 'msg.sender').
-    * @param to Token recipient.
-    * @param value Number of tokens to transfer.
-    * @param data Information attached to the transfer, and intended for the token holder ('from').
-    */
+    /**
+     * @dev Transfer the amount of tokens on behalf of the address 'from' to the address 'to'.
+     * @param from Token holder (or 'address(0)' to set from to 'msg.sender').
+     * @param to Token recipient.
+     * @param value Number of tokens to transfer.
+     * @param data Information attached to the transfer, and intended for the token holder ('from').
+     */
     function transferFromWithData(address from, address to, uint256 value, bytes calldata data) external override {
         _validator.tokensToTransfer(msg.sender, address(this), from, to, value, data);
         _updateDividend(from);
@@ -127,9 +131,9 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
      * @param value Number of tokens issued.
      * @param data Information attached to the issuance, by the issuer.
      */
-    function issue(address tokenHolder, uint256 value, bytes calldata data) 
-        external override
-        onlyIssuer
+    function issue(address tokenHolder, uint256 value, bytes calldata data)
+    external override
+    onlyIssuer
     {
         require(_isIssuable, "EquityToken: token not issuable");
         _mint(tokenHolder, value);
@@ -142,23 +146,23 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
     /************************************************************************************/
 
     /******************************** Transfers validity ********************************/
-    function canTransfer(address to, uint256 value, bytes calldata data) 
-        external view override 
-        returns (bool, byte, bytes32) 
+    function canTransfer(address to, uint256 value, bytes calldata data)
+    external view override
+    returns (bool, bytes1, bytes32)
     {
         return _canTransfer(msg.sender, to, value, data);
     }
 
-    function canTransferFrom(address from, address to, uint256 value, bytes calldata data) 
-        external view override 
-        returns (bool, byte, bytes32) 
+    function canTransferFrom(address from, address to, uint256 value, bytes calldata data)
+    external view override
+    returns (bool, bytes1, bytes32)
     {
         return _canTransfer(from, to, value, data);
     }
     /************************************************************************************/
 
     /************************************* Dividends ************************************/
-    function dividendOf(address investor) public view override returns(uint256) {
+    function dividendOf(address investor) public view override returns (uint256) {
         return _dividendsOwing(investor).add(_dividendBalance[investor]).sub(_withdrawnDividends[investor]);
     }
 
@@ -175,20 +179,20 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
     }
 
     function withdrawDividends(address[] memory investors) external {
-        for (uint i = 0; i<investors.length; i++) {
+        for (uint i = 0; i < investors.length; i++) {
             withdrawDividend(investors[i]);
         }
     }
 
-    function withdrawnDividendOf(address investor) external view override returns(uint256) {
+    function withdrawnDividendOf(address investor) external view override returns (uint256) {
         return _withdrawnDividends[investor];
     }
     /************************************************************************************/
 
     /******************************** INTERNAL FUNCTIONS ********************************/
-    function _canTransfer(address from, address to, uint256 value, bytes memory data) 
-        internal view
-        returns (bool, byte, bytes32) 
+    function _canTransfer(address from, address to, uint256 value, bytes memory data)
+    internal view
+    returns (bool, bytes1, bytes32)
     {
         if (from != msg.sender && value > allowance(from, msg.sender))
             return (false, 0x53, bytes32(0));
@@ -202,13 +206,13 @@ contract EquityToken is IEquityToken, ERC20, TokenRecover {
         else if (!checkAdd(balanceOf(to), value))
             return (false, 0x50, bytes32(0));
 
-        else if (!_validator.canTransfer(msg.sender, address(this), from, to, value, data)) 
+        else if (!_validator.canTransfer(msg.sender, address(this), from, to, value, data))
             return (false, 0x54, bytes32(0));
-        
+
         return (true, 0x51, bytes32(0));
     }
 
-    function _dividendsOwing(address investor) internal view returns(uint256) {
+    function _dividendsOwing(address investor) internal view returns (uint256) {
         uint256 dividendPerShare = _dividendPerShare.sub(_lastDividendPerShare[investor]);
         return (balanceOf(investor).mul(dividendPerShare)).div(_multiplier);
     }

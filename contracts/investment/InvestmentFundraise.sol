@@ -1,7 +1,7 @@
 //SPDX-License-Identifier: Unlicense
-pragma solidity >=0.7.0 <0.8.0;
+pragma solidity ^0.8.6;
 
-import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "../tokens/FCQToken.sol";
 import "./FundraiseAccounts.sol";
 import "../tokens/IEquityToken.sol";
@@ -170,7 +170,7 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
         address,
         uint256,
         bytes memory
-    ) public override returns (bool success) {
+    ) public override returns (bool) {
         revert();
     }
 
@@ -304,7 +304,7 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
         );
 
         _balances[accountId] = 0;
-        bytes calldata data;
+        bytes memory data;
         _equityToken.issue(_accounts[accountId]._investorWallet, amount, data);
         emit TokensWithdrawn(
             _accounts[accountId]._investorWallet,
