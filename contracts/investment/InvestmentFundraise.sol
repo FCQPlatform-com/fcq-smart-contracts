@@ -11,8 +11,24 @@ import "../tokens/IEquityToken.sol";
  * Sold tokens represent equity in the investment. Contract accepts payments in USDT and FCQ tokens.
  * Every investor has to have created fundraise account and signed an agreement to join STO.
  */
-contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
+contract InvestmentFundraise is FundraiseAccounts {
     using SafeMath for uint256;
+
+    // Data used to process the payment.
+    struct PaymentInfo {
+        // payment token, it should be one of accepted payment tokens
+        IERC20 tokenAddress;
+        // investor address
+        address sender;
+        // unique account number created for single investment agreement
+        uint256 accountId;
+        // amount of tokens sent to fundraise contract
+        uint256 value;
+        // overall payment amount, the value can be lower than amountToPay (investor can pay full amount in parts)
+        uint256 amountToPay;
+        // number of equity tokens investor will get after full payment.
+        uint256 tokensToBuy;
+    }
 
     event FundraiseFinalized(bool successfully);
     event Refunded(address indexed refundee, uint256 indexed accountId);
@@ -32,6 +48,11 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
         address token,
         uint256 amount
     );
+
+    // This value must be included whenever signature is generated
+    mapping(uint256 => uint256) public nonces;
+
+    bytes32 public constant PAY_TYPEHASH = keccak256("Pay(PaymentInfo paymentInfo,address signer,uint8 v,bytes32 r,bytes32 s)");
 
     bytes32 _name;
     IERC20[] _paymentTokens;
@@ -62,6 +83,8 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     mapping(uint256 => bool) _isPaid;
     // Mapping from account id to equity token balance.
     mapping(uint256 => uint256) _balances;
+    // Mapping from account id to wallet address.
+    mapping(uint256 => address) _accountWallet;
 
     modifier onlyOperator() {
         require(
@@ -103,7 +126,7 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
             "InvestmentFundraise: roles contract cannot be zero address"
         );
         require(
-            paymentTokens_.length == tokenRates_.length, 
+            paymentTokens_.length == tokenRates_.length,
             "InvestmentFundraise: number of tokens doesn't match the number of rates"
         );
 
@@ -124,54 +147,27 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     /**
      * @dev before payment fundraising contract has to be approved to transfer payment tokens
      */
-    function payWithToken(
-        IERC20 tokenAddress,
-        uint256 accountId,
-        uint256 amount
+    function pay(
+        PaymentInfo memory paymentInfo,
+        address signer,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
     ) public {
-        _payWithToken(tokenAddress, accountId, msg.sender, amount);
-    }
+        require(_roles.isPlatform(signer), "signer is not a platform");
 
-    /**
-     * @dev before payment fundraising contract has to be approved to transfer payment tokens
-     */
-    function payWithTokenFor(
-        IERC20 tokenAddress,
-        uint256 accountId,
-        address sender,
-        uint256 amount
-    ) public onlyPlatform {
-        _payWithToken(tokenAddress, accountId, sender, amount);
-    }
+        bytes32 hashStruct = keccak256(
+            abi.encode(
+                PAY_TYPEHASH,
+                paymentInfo,
+                nonces[paymentInfo.accountId]++
+            ));
 
-    /**
-     * @dev This function is FCQToken approve receiver. It is called as a result of approveAndCall function execution.
-     * It can be used to pay with FCQToken in single transaction.
-     */
-    function receiveApproval(
-        address sender,
-        uint256 amount,
-        IERC20,
-        bytes memory data
-    ) public override {
-        require(
-            msg.sender == address(_fcqToken),
-            "InvestmentFundraise: approve not from FCQToken"
-        );
-        uint256 accountId = bytesToUint256(data);
-        emit PaymentAccepted(sender, accountId, msg.sender, amount);
-        _payWithToken(_fcqToken, accountId, sender, amount);
-    }
+        require(verifyPersonalSign(signer, hashStruct, v, r, s), "invalid signature");
+        _accountWallet[paymentInfo.accountId] = paymentInfo.sender;
 
-    /**
-     * @dev This function is FCQToken transfer receiver. It is called as a result of transferAndCall function execution.
-     */
-    function onTokenTransfer(
-        address,
-        uint256,
-        bytes memory
-    ) public override returns (bool) {
-        revert();
+        _preValidatePayment(paymentInfo);
+        _processPayment(paymentInfo);
     }
 
     /**************************************************************************************/
@@ -249,7 +245,7 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
         );
         for (uint256 i = 0; i < _paymentTokens.length; i++) {
             uint256 amount =
-                _paidByInvestor[address(_paymentTokens[i])][refundee];
+            _paidByInvestor[address(_paymentTokens[i])][refundee];
             _paidByInvestor[address(_paymentTokens[i])][refundee] = 0;
             _paymentTokens[i].transfer(refundee, amount);
         }
@@ -263,15 +259,15 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     function claimRefundForAccount(uint256 accountId) public {
         require(
             _refundEnabled ||
-                isBlocklistedAccount(accountId) ||
-                (_finalized && !_isPaid[accountId]),
+            isBlocklistedAccount(accountId) ||
+            (_finalized && !_isPaid[accountId]),
             "InvestmentFundraise: refund forbidden"
         );
-        address investor = _accounts[accountId]._investorWallet;
+        address investor = _accountWallet[accountId];
         for (uint256 i = 0; i < _paymentTokens.length; i++) {
             uint256 amount = _paid[address(_paymentTokens[i])][accountId];
             _paidByInvestor[address(_paymentTokens[i])][
-                investor
+            investor
             ] = _paidByInvestor[address(_paymentTokens[i])][investor].sub(
                 amount
             );
@@ -294,7 +290,7 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
             "InvestmentFundraise: account is blocklisted"
         );
         require(
-            !isBlocklistedWallet(_accounts[accountId]._investorWallet),
+            !isBlocklistedWallet(_accountWallet[accountId]),
             "InvestmentFundraise: wallet is blocklisted"
         );
         uint256 amount = _balances[accountId];
@@ -305,9 +301,9 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
 
         _balances[accountId] = 0;
         bytes memory data;
-        _equityToken.issue(_accounts[accountId]._investorWallet, amount, data);
+        _equityToken.issue(_accountWallet[accountId], amount, data);
         emit TokensWithdrawn(
-            _accounts[accountId]._investorWallet,
+            _accountWallet[accountId],
             accountId,
             amount
         );
@@ -327,17 +323,17 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     }
 
     function paid(address tokenAddress, address investorWallet)
-        public
-        view
-        returns (uint256)
+    public
+    view
+    returns (uint256)
     {
         return _paidByInvestor[tokenAddress][investorWallet];
     }
 
     function paidForAccount(address tokenAddress, uint256 accountId)
-        public
-        view
-        returns (uint256)
+    public
+    view
+    returns (uint256)
     {
         return _paid[tokenAddress][accountId];
     }
@@ -369,9 +365,9 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     }
 
     function getAmountPaidInUSD(uint256 accountId)
-        public
-        view
-        returns (uint256)
+    public
+    view
+    returns (uint256)
     {
         uint256 result = 0;
         for (uint256 i = 0; i < _paymentTokens.length; i++) {
@@ -385,12 +381,12 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
             }
         }
         return
-            result.add(
-                fromTokenToUSD(
-                    _paid[address(_fcqToken)][accountId],
-                    _tokenRates[address(_fcqToken)]
-                )
-            );
+        result.add(
+            fromTokenToUSD(
+                _paid[address(_fcqToken)][accountId],
+                _tokenRates[address(_fcqToken)]
+            )
+        );
     }
 
     function token() public view returns (address) {
@@ -402,23 +398,23 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
     }
 
     function fromTokenToUSD(uint256 value, int256 rate)
-        public
-        pure
-        returns (uint256)
+    public
+    pure
+    returns (uint256)
     {
         if (rate > 0) {
             return value.mul(uint256(rate));
         }
-        return value.div(uint256(-rate));
+        return value.div(uint256(- rate));
     }
 
     function fromUSDToToken(uint256 value, int256 rate)
-        public
-        pure
-        returns (uint256)
+    public
+    pure
+    returns (uint256)
     {
         if (rate < 0) {
-            return value.mul(uint256(-rate));
+            return value.mul(uint256(- rate));
         }
         return value.div(uint256(rate));
     }
@@ -427,100 +423,83 @@ contract InvestmentFundraise is FundraiseAccounts, ContractFallbacks {
 
     /************************************* INTERNAL FUNCTIONS ***************************************/
 
-    function _payWithToken(
-        IERC20 tokenAddress,
-        uint256 accountId,
-        address sender,
-        uint256 amount
-    ) internal {
-        _preValidatePayment(accountId, sender, amount, tokenAddress);
-        _processPayment(accountId, sender, amount, tokenAddress);
-    }
+    function _processPayment(PaymentInfo memory info) internal {
+        // value to pay in USD with 6 decimals
+        uint256 toPay = info.amountToPay.sub(getAmountPaidInUSD(info.accountId));
 
-    function _processPayment(
-        uint256 accountId,
-        address sender,
-        uint256 amount,
-        IERC20 tokenAddress
-    ) internal {
-        // value in USD with 6 decimals
-        uint256 toPay = _accounts[accountId]._amountToPayInUSD.sub(getAmountPaidInUSD(accountId));
-
-        uint256 amountInUSD = fromTokenToUSD(amount, _tokenRates[address(tokenAddress)]);
+        uint256 amountInUSD = fromTokenToUSD(info.value, _tokenRates[address(info.tokenAddress)]);
         if (amountInUSD > toPay) {
             amountInUSD = toPay;
-            amount = fromUSDToToken(amountInUSD, _tokenRates[address(tokenAddress)]);
+            info.value = fromUSDToToken(amountInUSD, _tokenRates[address(info.tokenAddress)]);
         }
 
-        _paid[address(tokenAddress)][accountId] = _paid[address(tokenAddress)][accountId].add(amount);
-        _paidByInvestor[address(tokenAddress)][sender] = _paidByInvestor[address(tokenAddress)][sender].add(amount);
+        _paid[address(info.tokenAddress)][info.accountId] = _paid[address(info.tokenAddress)][info.accountId].add(info.value);
+        _paidByInvestor[address(info.tokenAddress)][info.sender] = _paidByInvestor[address(info.tokenAddress)][info.sender].add(info.value);
 
-        if (getAmountPaidInUSD(accountId) == _accounts[accountId]._amountToPayInUSD) {
-            _tokenRaised[address(tokenAddress)] = _tokenRaised[address(tokenAddress)]
-                .add(_paid[address(tokenAddress)][accountId]);
-            _processPurchase(accountId);
+        if (getAmountPaidInUSD(info.accountId) == info.amountToPay) {
+            _tokenRaised[address(info.tokenAddress)] = _tokenRaised[address(info.tokenAddress)]
+            .add(_paid[address(info.tokenAddress)][info.accountId]);
+            _processPurchase(info.sender, info.accountId, info.tokensToBuy);
         }
-        tokenAddress.transferFrom(sender, address(this), amount);
-        emit PaymentAccepted(sender, accountId, address(tokenAddress), amount);
+        info.tokenAddress.transferFrom(info.sender, address(this), info.value);
+        emit PaymentAccepted(info.sender, info.accountId, address(info.tokenAddress), info.value);
     }
 
-    function _preValidatePayment(
-        uint256 accountId,
-        address sender,
-        uint256 amount,
-        IERC20 tokenAddress
-    ) internal view virtual {
+    function _preValidatePayment(PaymentInfo memory info) internal view virtual {
         require(
-            checkAccount(accountId, sender),
+            !isBlocklistedWallet(info.sender) && !isBlocklistedAccount(info.accountId),
             "InvestmentFundraise: invalid fundraise account"
         );
         require(
-            amount > 0,
+            info.value > 0,
             "InvestmentFundraise: amount should be grater than 0"
         );
-        require(!isPaid(accountId), "InvestmentFundraise: agreement is paid");
-        if (tokenAddress == _fcqToken) {
-            require(
-                _paid[address(_fcqToken)][accountId].add(amount) <=
-                    _accounts[accountId]._maxPaymentInFCQ,
-                "InvestmentFundraise: cannot pay in FCQ more than limit"
-            );
-        }
         require(
             block.timestamp <= _endTime,
             "InvestmentFundraise: time to invest has ended"
         );
         require(
-            totalRaised().add(_accounts[accountId]._amountToPayInUSD) <= _cap,
+            totalRaised().add(info.amountToPay) <= _cap,
             "InvestmentFundraise: cap exceeded"
         );
         require(!_finalized, "InvestmentFundraise: already finalized");
         require(
-            _isPaymentToken[address(tokenAddress)],
+            _isPaymentToken[address(info.tokenAddress)],
             "InvestmentFundraise: token address is not accepted for payment"
         );
     }
 
-    function _processPurchase(uint256 accountId) internal {
+    function _processPurchase(address sender, uint256 accountId, uint256 tokensToBuy) internal {
         _isPaid[accountId] = true;
         _balances[accountId] = _balances[accountId].add(
-            _accounts[accountId]._tokensToBuy
+            tokensToBuy
         );
         emit TokensPurchased(
-            _accounts[accountId]._investorWallet,
+            sender,
             accountId,
-            _accounts[accountId]._tokensToBuy
+            tokensToBuy
         );
     }
 
     function bytesToUint256(bytes memory data)
-        internal
-        pure
-        returns (uint256 value)
+    internal
+    pure
+    returns (uint256 value)
     {
         assembly {
             value := mload(add(data, 0x20))
         }
     }
     /************************************************************************************************/
+
+    function verifyPersonalSign(address target, bytes32 hashStruct, uint8 v, bytes32 r, bytes32 s) internal pure returns (bool) {
+        bytes32 hash = prefixed(hashStruct);
+        address signer = ecrecover(hash, v, r, s);
+        return (signer != address(0) && signer == target);
+    }
+
+    // Builds a prefixed hash to mimic the behavior of eth_sign.
+    function prefixed(bytes32 hash) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    }
 }
